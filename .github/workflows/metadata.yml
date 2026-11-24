@@ -1,0 +1,107 @@
+name: PR and issue metadata
+
+on:
+  # Base-branch workflow only: never check out or execute untrusted PR code here.
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+  issues:
+    types: [opened, edited]
+
+permissions: {}
+
+jobs:
+  pr-labels:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
+        with:
+          sync-labels: false
+
+  pr-assignee:
+    if: github.event_name == 'pull_request_target' && github.event.action == 'opened'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const repo = context.repo;
+            const number = context.payload.pull_request.number;
+            const { data: pr } = await github.rest.pulls.get({
+              ...repo, pull_number: number,
+            });
+            // Only assign humans opening PRs from this repository.
+            // Read current state to preserve any manually assigned owners.
+            if (pr.state !== 'open' || pr.assignees.length > 0 ||
+                pr.user.type !== 'User' ||
+                pr.head.repo?.id !== context.payload.repository.id) {
+              core.info('No automatic assignee needed.');
+              return;
+            }
+            const author = pr.user.login;
+            try {
+              await github.request('GET /repos/{owner}/{repo}/assignees/{assignee}', {
+                ...repo, assignee: author,
+              });
+            } catch (error) {
+              if (error.status === 404) {
+                core.info('PR author is not assignable.');
+                return;
+              }
+              throw error;
+            }
+            await github.rest.issues.addAssignees({
+              ...repo, issue_number: number, assignees: [author],
+            });
+
+  issue-labels:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const repo = context.repo;
+            const number = context.payload.issue.number;
+            const { data: issue } = await github.rest.issues.get({
+              ...repo, issue_number: number,
+            });
+            if (issue.state !== 'open') return;
+            const areaLabels = new Map([
+              ['프론트엔드', 'area:frontend'],
+              ['백엔드', 'area:backend'],
+              ['AI', 'area:ai'],
+              ['공통 설정', 'area:infra'],
+            ]);
+            // Issue Forms render the dropdown as a Markdown heading.
+            // General research has no unique area; leave it for manual classification.
+            const lines = (issue.body ?? '').split(/\r?\n/);
+            const heading = lines.findIndex(line => line.trim() === '### 영역');
+            if (heading < 0) return;
+            const selection = lines.slice(heading + 1).find(line => line.trim())?.trim();
+            const label = areaLabels.get(selection);
+            if (!label || issue.labels.some(item => item.name === label)) return;
+            // Never create, delete, or rename repository labels.
+            try {
+              await github.rest.issues.getLabel({ ...repo, name: label });
+            } catch (error) {
+              if (error.status === 404) {
+                core.warning('Configured area label is missing: ' + label);
+                return;
+              }
+              throw error;
+            }
+            // Additive only; preserve all manual labels and assignees.
+            await github.rest.issues.addLabels({
+              ...repo, issue_number: number, labels: [label],
+            });

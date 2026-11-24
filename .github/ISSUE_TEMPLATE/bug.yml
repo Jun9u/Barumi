@@ -1,6 +1,7 @@
 name: 오류 신고
 description: 실제로 발생한 문제와 재현 방법을 기록합니다.
 title: "[오류] "
+labels: ["bug"]
 body:
   - type: textarea
     id: steps
